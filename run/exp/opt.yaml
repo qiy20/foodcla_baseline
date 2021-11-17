@@ -1,0 +1,9 @@
+epochs: 64
+lr: 0.001
+weight_decay: 0.0001
+batch_size: 64
+num_workers: 8
+model: resnet50
+device: cuda:0
+adam: true
+save_dir: run/exp
