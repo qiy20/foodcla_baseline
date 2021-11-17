@@ -169,7 +169,7 @@ def train(opt):
     metric_logger.plot(img_res, 3)
     # submit
     model.load_state_dict(torch.load(best))
-    arg = np.argmax(metric_logger.meters['val_loss'])
+    arg = np.argmin(metric_logger.meters['val_loss'])
     top1_acc = metric_logger.meters['top1_acc'][arg]
     top5_acc = metric_logger.meters['top5_acc'][arg]
     logger.info(f'\nsubmit: top1_acc={top1_acc},top5_acc={top5_acc}')

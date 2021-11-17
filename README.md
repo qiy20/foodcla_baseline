@@ -19,11 +19,17 @@ foodcla
 
 # 2.运行
 
-运行参数见run/exp/opt
+运行参数见run/exp/opt.yaml
 
 ```bash
 python baseline.py --adam
 ```
 
 # 3.结果
+
+top1_acc:44.63
+
+top5_acc:71.80
+
+具体结果见run/exp
 
