@@ -138,8 +138,9 @@ def train(opt):
         for i, (img, label) in tqdm(enumerate(train_dl),total=len(train_dl)):
             img = img.to(device)
             label = label.to(device)
-            pred = model(img)
-            loss = loss_func(pred, label)
+            with amp.autocast():
+                pred = model(img)
+                loss = loss_func(pred, label)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -151,8 +152,9 @@ def train(opt):
             for i, (img, label) in tqdm(enumerate(val_dl), total=len(val_dl)):
                 img = img.to(device)
                 label = label.to(device)
-                pred = model(img)
-                loss = loss_func(pred, label)
+                with amp.autocast():
+                    pred = model(img)
+                    loss = loss_func(pred, label)
                 _, arg = pred.topk(5, 1)
                 label = label.view(-1, 1)
                 _top1_acc = (label == arg[:, :1]).sum().item() / label.numel()
