@@ -9,6 +9,7 @@ from torch.optim import SGD, Adam, lr_scheduler
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.models import resnet18, resnet50, resnet101
+from torch.cuda import amp
 import cv2
 import numpy as np
 from tqdm import tqdm
@@ -34,6 +35,7 @@ def parse_opt():
     parser.add_argument('--model', default='resnet50')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--adam', action='store_true')
+    parser.add_argument('--pretrained', action='store_true')
     parser.add_argument('--save_dir', default='run/exp')
     opt = parser.parse_intermixed_args()
     return opt
@@ -102,7 +104,7 @@ def train(opt):
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.safe_dump(vars(opt), f, sort_keys=False)
     metric_logger = MetricLogger()
-    model = eval(opt.model)(num_classes=1000).to(device)
+    model = eval(opt.model)(opt.pretrained,num_classes=1000).to(device)
     train_ds = FoodDataset(mode='train')
     val_ds = FoodDataset(mode='val')
     test_ds = FoodDataset(mode='test')
@@ -128,6 +130,7 @@ def train(opt):
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     loss_func = nn.CrossEntropyLoss()
     best_acc_top1 = float('-inf')
+    scaler = amp.GradScaler()
     for epoch in range(epochs):
         logger.info(f'epoch： {epoch + 1}/{epochs}')
         logger.info('training:')
@@ -137,8 +140,9 @@ def train(opt):
             label = label.to(device)
             pred = model(img)
             loss = loss_func(pred, label)
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad()
             train_loss = (train_loss * i + loss.item()) / (i + 1)
         logger.info('validating')
