@@ -29,9 +29,9 @@ python baseline.py --adam
 
 ### 3.1 resnet50(64 epochs)
 
-top1_acc:44.63
+top1_acc:0.4463
 
-top5_acc:71.80
+top5_acc:0.7180
 
 具体结果见run/exp
 
@@ -40,6 +40,4 @@ top5_acc:71.80
 top1_acc:0.5372
 
 top5_acc:0.7806
-
-具体结果见run/exp2
 
