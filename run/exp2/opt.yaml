@@ -1,4 +1,4 @@
-epochs: 128
+epochs: 0
 lr: 0.001
 weight_decay: 0.0001
 batch_size: 64
@@ -6,4 +6,4 @@ num_workers: 8
 model: resnet101
 device: cuda:0
 adam: true
-save_dir: run/exp
+save_dir: run/exp2
