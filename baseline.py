@@ -127,7 +127,7 @@ def train(opt):
                 f"{len(g0)} weight, {len(g1)} weight (with decay), {len(g2)} bias")
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     loss_func = nn.CrossEntropyLoss()
-    min_val_loss = float('inf')
+    best_acc_top1 = float('-inf')
     for epoch in range(epochs):
         logger.info(f'epoch： {epoch + 1}/{epochs}')
         logger.info('training:')
@@ -161,15 +161,15 @@ def train(opt):
         scheduler.step()
         torch.save(model.state_dict(), last)
         logger.info(str(metric_logger))
-        if val_loss < min_val_loss:
+        if top1_acc > best_acc_top1:
             logger.info('changing best weight...')
             torch.save(model.state_dict(), best)
-            min_val_loss = val_loss
+            best_acc_top1 = top1_acc
     metric_logger.output_csv(txt_res)
     metric_logger.plot(img_res, 3)
     # submit
     model.load_state_dict(torch.load(best))
-    arg = np.argmin(metric_logger.meters['val_loss'])
+    arg = np.argmax(metric_logger.meters['top1_acc'])
     top1_acc = metric_logger.meters['top1_acc'][arg]
     top5_acc = metric_logger.meters['top5_acc'][arg]
     logger.info(f'\nsubmit: top1_acc={top1_acc},top5_acc={top5_acc}')
