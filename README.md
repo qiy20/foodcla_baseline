@@ -41,8 +41,12 @@ top1_acc:0.5372
 
 top5_acc:0.7806
 
+具体结果见run/exp2
+
 ### 3.3 resnet101(fine tune)
 
 top1_acc:0.6649
 
 top5_acc:0.8599
+
+具体结果见run/exp3
