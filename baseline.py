@@ -1,5 +1,7 @@
 from pathlib import Path
 import argparse
+
+import matplotlib.pyplot as plt
 import yaml
 import logging
 
@@ -8,7 +10,7 @@ from torch import nn
 from torch.optim import SGD, Adam, lr_scheduler
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from torchvision.models import resnet18, resnet50, resnet101
+from torchvision.models import resnet18, resnet50, resnet101, resnext50_32x4d, resnext101_32x8d
 from torch.cuda import amp
 import cv2
 import numpy as np
@@ -36,6 +38,7 @@ def parse_opt():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--adam', action='store_true')
     parser.add_argument('--pretrained', action='store_true')
+    parser.add_argument('--trainable_layers', default=5, type=int)
     parser.add_argument('--save_dir', default='run/exp')
     opt = parser.parse_intermixed_args()
     return opt
@@ -67,10 +70,10 @@ class FoodDataset(Dataset):
             self.img_paths = img_paths
         self.trans = None
         if augment:
-            self.trans = transforms.Compose([transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1),
-                                                                     scale=(.9, 1.1), shear=(-10, 10)),
+            self.trans = transforms.Compose([transforms.RandomAffine(degrees=10, translate=(0.2,0.2),
+                                                                     scale=(0.8,1.5)),
                                              transforms.RandomHorizontalFlip(),
-                                             transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, ),
+                                             transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, ),
                                              ])
 
     def __len__(self):
@@ -95,6 +98,7 @@ def train(opt):
     init_seeds()
     save_dir, device, epochs, lr, weight_decay, batch_size, num_workers = Path(
         opt.save_dir), opt.device, opt.epochs, opt.lr, opt.weight_decay, opt.batch_size, opt.num_workers
+    # save dir
     save_dir = increment_path(save_dir)
     w = save_dir / 'weights'  # weights dir, /==.joinpath()
     w.mkdir(parents=True, exist_ok=True)  # make dir
@@ -103,32 +107,47 @@ def train(opt):
     submit = save_dir / 'submit.csv'
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.safe_dump(vars(opt), f, sort_keys=False)
+    # logger
     metric_logger = MetricLogger()
+    # model
     model = eval(opt.model)(opt.pretrained,num_classes=1000).to(device)
+    trainable_layers=opt.trainable_layers
+    assert 0 <= trainable_layers <= 5
+    layers_to_train = ['layer4', 'layer3', 'layer2', 'layer1', 'conv1'][:trainable_layers]
+    if trainable_layers == 5:
+        layers_to_train.append('bn1')
+    layers_to_train.append('fc')
+    for name, parameter in model.named_parameters():
+        if all([not name.startswith(layer) for layer in layers_to_train]):
+            parameter.requires_grad_(False)
+    # data
     train_ds = FoodDataset(mode='train')
     val_ds = FoodDataset(mode='val')
     test_ds = FoodDataset(mode='test')
     train_dl = DataLoader(train_ds, batch_size, True, num_workers=num_workers)
     val_dl = DataLoader(val_ds, batch_size, False, num_workers=num_workers)
     test_dl = DataLoader(test_ds, batch_size, False, num_workers=num_workers)
+    # optimizer
     g0, g1, g2 = [], [], []  # optimizer parameter groups
     for v in model.modules():
-        if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):  # bias
+        if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter) and v.bias.requires_grad:  # bias
             g2.append(v.bias)
-        if isinstance(v, nn.BatchNorm2d):  # weight (no decay)
+        if isinstance(v, nn.BatchNorm2d) and v.weight.requires_grad:  # weight (no decay)
             g0.append(v.weight)
-        elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):  # weight (with decay)
+        elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter) and v.weight.requires_grad:  # weight (with decay)
             g1.append(v.weight)
     if opt.adam:
-        optimizer = Adam(g0, lr=lr, betas=(0.9, 0.999))  # adjust beta1 to momentum
+        optimizer = Adam(g0+g2, lr=lr, betas=(0.9, 0.999))  # adjust beta1 to momentum
     else:
-        optimizer = SGD(g0, lr=lr, momentum=0.9)
+        optimizer = SGD(g0+g2, lr=lr, momentum=0.9)
     optimizer.add_param_group({'params': g1, 'weight_decay': weight_decay})  # add g1 with weight_decay
-    optimizer.add_param_group({'params': g2})  # add g2 (biases)
     logger.info(f"{'optimizer:'} {type(optimizer).__name__} with parameter groups "
                 f"{len(g0)} weight, {len(g1)} weight (with decay), {len(g2)} bias")
+    # scheduler
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    # loss func
     loss_func = nn.CrossEntropyLoss()
+    # train
     best_acc_top1 = float('-inf')
     scaler = amp.GradScaler()
     for epoch in range(epochs):
@@ -147,6 +166,7 @@ def train(opt):
             optimizer.zero_grad()
             train_loss = (train_loss * i + loss.item()) / (i + 1)
         logger.info('validating')
+        # val
         with torch.no_grad():
             model.eval()
             for i, (img, label) in tqdm(enumerate(val_dl), total=len(val_dl)):
