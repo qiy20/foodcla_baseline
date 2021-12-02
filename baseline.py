@@ -10,7 +10,9 @@ from torch import nn
 from torch.optim import SGD, Adam, lr_scheduler
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from torchvision.models import resnet18, resnet50, resnet101, resnext50_32x4d, resnext101_32x8d
+from timm.models.resnet import resnet18, resnet50, resnet101, resnext50_32x4d, resnext101_32x8d
+from timm.models.efficientnet import efficientnet_b2
+from timm.models.swin_transformer import swin_base_patch4_window7_224,swin_base_patch4_window7_224_in22k
 from torch.cuda import amp
 import cv2
 import numpy as np
@@ -38,14 +40,13 @@ def parse_opt():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--adam', action='store_true')
     parser.add_argument('--pretrained', action='store_true')
-    parser.add_argument('--trainable_layers', default=5, type=int)
     parser.add_argument('--save_dir', default='run/exp')
     opt = parser.parse_intermixed_args()
     return opt
 
 
 class FoodDataset(Dataset):
-    def __init__(self, mode, augment=True, infer_size=224):  # mode 'train','val' or 'test'
+    def __init__(self, mode, infer_size=224):  # mode 'train','val' or 'test'
         self.mode = mode
         if isinstance(infer_size,int):
             infer_size = infer_size, infer_size
@@ -69,8 +70,7 @@ class FoodDataset(Dataset):
                     img_paths.append(str(direc / path))
             self.img_paths = img_paths
         self.trans = None
-        if augment:
-            self.trans = transforms.Compose([transforms.RandomAffine(degrees=10, translate=(0.2,0.2),
+        self.trans = transforms.Compose([transforms.RandomAffine(degrees=10, translate=(0.2,0.2),
                                                                      scale=(0.8,1.5)),
                                              transforms.RandomHorizontalFlip(),
                                              transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, ),
@@ -81,7 +81,6 @@ class FoodDataset(Dataset):
 
     def __getitem__(self, item):
         img = cv2.imread(self.img_paths[item])
-        img = cv2.resize(img, self.infer_size)
         img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         img = torch.from_numpy(np.ascontiguousarray(img)) / 255.
         if self.mode == 'train':
@@ -111,15 +110,7 @@ def train(opt):
     metric_logger = MetricLogger()
     # model
     model = eval(opt.model)(opt.pretrained,num_classes=1000).to(device)
-    trainable_layers=opt.trainable_layers
-    assert 0 <= trainable_layers <= 5
-    layers_to_train = ['layer4', 'layer3', 'layer2', 'layer1', 'conv1'][:trainable_layers]
-    if trainable_layers == 5:
-        layers_to_train.append('bn1')
-    layers_to_train.append('fc')
-    for name, parameter in model.named_parameters():
-        if all([not name.startswith(layer) for layer in layers_to_train]):
-            parameter.requires_grad_(False)
+    # model.load_state_dict(torch.load('run/exp12/weights/best.pt'))
     # data
     train_ds = FoodDataset(mode='train')
     val_ds = FoodDataset(mode='val')
