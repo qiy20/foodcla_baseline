@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import time
 
 import matplotlib.pyplot as plt
 import yaml
@@ -10,16 +11,19 @@ from torch import nn
 from torch.optim import SGD, Adam, lr_scheduler
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from timm.models.resnet import resnet18, resnet50, resnet101, resnext50_32x4d, resnext101_32x8d
+from timm.models.resnet import resnet18, resnet50, resnet101, resnext50_32x4d, resnext101_32x8d,Bottleneck,BasicBlock
 from timm.models.efficientnet import efficientnet_b2
-from timm.models.swin_transformer import swin_base_patch4_window7_224,swin_base_patch4_window7_224_in22k
+from timm.models.swin_transformer import swin_base_patch4_window7_224, swin_base_patch4_window7_224_in22k, \
+    swin_base_patch4_window12_384_in22k, swin_large_patch4_window7_224_in22k,swin_small_patch4_window7_224
+from timm.data import Mixup
+from timm.loss import LabelSmoothingCrossEntropy
 from torch.cuda import amp
 import cv2
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
 
-from utils import init_seeds, increment_path, MetricLogger
+from utils import init_seeds, increment_path, MetricLogger, mixup_data, one_hot, warmup_cosine_schedule
 
 logging.basicConfig(format="%(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,7 +36,11 @@ DATA_DIR = {'train': 'Train_qtc', 'val': 'val', 'test': 'test_new'}
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', default=64, type=int)
+    parser.add_argument('--img_size', default=224, type=int)
+    parser.add_argument('--num_classes', default=1000, type=int)
     parser.add_argument('--lr', default=1e-3, type=float)
+    parser.add_argument('--warmup_epochs', default=0, type=float)
+    parser.add_argument('--label_smooth', default=.1, type=float)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--num_workers', default=8, type=int)
@@ -40,6 +48,9 @@ def parse_opt():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--adam', action='store_true')
     parser.add_argument('--pretrained', action='store_true')
+    parser.add_argument('--bce_loss', action='store_true')
+    parser.add_argument('--mix_up', default=1., type=float)
+    parser.add_argument('--cut_mix', default=1., type=float)
     parser.add_argument('--save_dir', default='run/exp')
     opt = parser.parse_intermixed_args()
     return opt
@@ -70,17 +81,18 @@ class FoodDataset(Dataset):
                     img_paths.append(str(direc / path))
             self.img_paths = img_paths
         self.trans = None
-        self.trans = transforms.Compose([transforms.RandomAffine(degrees=10, translate=(0.2,0.2),
-                                                                     scale=(0.8,1.5)),
-                                             transforms.RandomHorizontalFlip(),
-                                             transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, ),
-                                             ])
+        self.trans = transforms.Compose([transforms.RandomAffine(degrees=10, translate=(0.2, 0.2),
+                                                                 scale=(0.8, 1.5)),
+                                         transforms.RandomHorizontalFlip(),
+                                         transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, ),
+                                         ])
 
     def __len__(self):
         return len(self.img_paths)
 
     def __getitem__(self, item):
         img = cv2.imread(self.img_paths[item])
+        img=cv2.resize(img,self.infer_size)
         img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         img = torch.from_numpy(np.ascontiguousarray(img)) / 255.
         if self.mode == 'train':
@@ -95,8 +107,8 @@ class FoodDataset(Dataset):
 
 def train(opt):
     init_seeds()
-    save_dir, device, epochs, lr, weight_decay, batch_size, num_workers = Path(
-        opt.save_dir), opt.device, opt.epochs, opt.lr, opt.weight_decay, opt.batch_size, opt.num_workers
+    save_dir, device, epochs, lr, weight_decay, batch_size, num_workers,img_size = Path(
+        opt.save_dir), opt.device, opt.epochs, opt.lr, opt.weight_decay, opt.batch_size, opt.num_workers,opt.img_size
     # save dir
     save_dir = increment_path(save_dir)
     w = save_dir / 'weights'  # weights dir, /==.joinpath()
@@ -109,13 +121,13 @@ def train(opt):
     # logger
     metric_logger = MetricLogger()
     # model
-    model = eval(opt.model)(opt.pretrained,num_classes=1000).to(device)
+    model = eval(opt.model)(opt.pretrained,num_classes=opt.num_classes).to(device)
     # model.load_state_dict(torch.load('run/exp12/weights/best.pt'))
     # data
-    train_ds = FoodDataset(mode='train')
-    val_ds = FoodDataset(mode='val')
-    test_ds = FoodDataset(mode='test')
-    train_dl = DataLoader(train_ds, batch_size, True, num_workers=num_workers)
+    train_ds = FoodDataset('train',img_size)
+    val_ds = FoodDataset('val',img_size)
+    test_ds = FoodDataset('test',img_size)
+    train_dl = DataLoader(train_ds, batch_size, True, num_workers=num_workers,)
     val_dl = DataLoader(val_ds, batch_size, False, num_workers=num_workers)
     test_dl = DataLoader(test_ds, batch_size, False, num_workers=num_workers)
     # optimizer
@@ -135,9 +147,16 @@ def train(opt):
     logger.info(f"{'optimizer:'} {type(optimizer).__name__} with parameter groups "
                 f"{len(g0)} weight, {len(g1)} weight (with decay), {len(g2)} bias")
     # scheduler
-    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    steps = epochs * len(train_dl)
+    warmup_steps = opt.warmup_epochs * len(train_dl)
+    scheduler = warmup_cosine_schedule(optimizer, warmup_steps, steps)
     # loss func
-    loss_func = nn.CrossEntropyLoss()
+    if opt.bce_loss:
+        loss_func = nn.BCEWithLogitsLoss()
+        off_value = opt.label_smooth / opt.num_classes
+        on_value = 1. - opt.label_smooth + off_value
+    else:
+        loss_func = LabelSmoothingCrossEntropy(opt.label_smooth)
     # train
     best_acc_top1 = float('-inf')
     scaler = amp.GradScaler()
@@ -149,12 +168,19 @@ def train(opt):
             img = img.to(device)
             label = label.to(device)
             with amp.autocast():
+                img, label1, label2, lam = mixup_data(img, label, opt.mix_up, opt.cut_mix)
                 pred = model(img)
-                loss = loss_func(pred, label)
+                if opt.bce_loss:
+                    _label = lam * one_hot(label1, opt.num_classes, on_value, off_value) + (1 - lam) * \
+                            one_hot(label2, opt.num_classes, on_value, off_value)
+                    loss = loss_func(pred, _label)*opt.num_classes
+                else:
+                    loss = lam*loss_func(pred, label1)+(1-lam)*loss_func(pred,label2)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            scheduler.step()
             train_loss = (train_loss * i + loss.item()) / (i + 1)
         logger.info('validating')
         # val
@@ -165,7 +191,11 @@ def train(opt):
                 label = label.to(device)
                 with amp.autocast():
                     pred = model(img)
-                    loss = loss_func(pred, label)
+                    if opt.bce_loss:
+                        _label = one_hot(label, opt.num_classes)
+                        loss = loss_func(pred, _label)*opt.num_classes
+                    else:
+                        loss = loss_func(pred, label)
                 _, arg = pred.topk(5, 1)
                 label = label.view(-1, 1)
                 _top1_acc = (label == arg[:, :1]).sum().item() / label.numel()
@@ -175,7 +205,6 @@ def train(opt):
                 top5_acc = (top5_acc * i + _top5_acc) / (i + 1)
         metric_logger.update(lr=scheduler.get_last_lr()[0], train_loss=train_loss, val_loss=val_loss, top1_acc=top1_acc,
                              top5_acc=top5_acc)
-        scheduler.step()
         torch.save(model.state_dict(), last)
         logger.info(str(metric_logger))
         if top1_acc > best_acc_top1:

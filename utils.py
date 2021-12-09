@@ -123,8 +123,48 @@ class FocalLoss(nn.Module):
             return loss
 
 
+def mixup_data(x, y, mixup_alpha=1., cutmix_alpha=0., switch_prob=0.5,):
+    use_cutmix = False
+    if mixup_alpha > 0. and cutmix_alpha > 0.:
+        use_cutmix = np.random.rand() < switch_prob
+        lam = np.random.beta(cutmix_alpha, cutmix_alpha) if use_cutmix else np.random.beta(mixup_alpha, mixup_alpha)
+    elif mixup_alpha > 0.:
+        lam = np.random.beta(mixup_alpha, mixup_alpha)
+    elif cutmix_alpha > 0.:
+        use_cutmix = True
+        lam = np.random.beta(cutmix_alpha, cutmix_alpha)
+    else:
+        lam = 1
+
+    device = x.device
+    bs, c, w, h = x.shape
+    index = torch.randperm(bs).to(device)
+
+    if use_cutmix:
+        cut_rat = np.sqrt(1. - lam)
+        cut_w = np.int(w * cut_rat)
+        cut_h = np.int(h * cut_rat)
+        cx = np.random.randint(w)
+        cy = np.random.randint(h)
+        bbx1 = np.clip(cx - cut_w // 2, 0, w)
+        bby1 = np.clip(cy - cut_h // 2, 0, h)
+        bbx2 = np.clip(cx + cut_w // 2, 0, w)
+        bby2 = np.clip(cy + cut_h // 2, 0, h)
+        x[:, :, bbx1:bbx2, bby1:bby2] = x[index, :, bbx1:bbx2, bby1:bby2]
+        lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (w * h))
+    else:
+        x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return x, y_a, y_b, lam
+
+
+def one_hot(x, num_classes, on_value=1., off_value=0.):
+    x = x.long().view(-1, 1)
+    device = x.device
+    return torch.full((x.size()[0], num_classes), off_value, device=device).scatter_(1, x, on_value)
+
+
 if __name__ == '__main__':
-    loss_func = FocalLoss(pos_weight=torch.tensor([1,1,.2,1]))
-    pred = torch.rand(4)
-    true = torch.rand(4)
-    loss = loss_func(pred, true)
+    y = torch.ones(32)
+    index = torch.randperm(32)
+    print(y[index])
