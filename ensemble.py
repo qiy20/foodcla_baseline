@@ -16,8 +16,7 @@ def ensemble(models, weights, dls, device):
     res = torch.stack(res)  # n_models x n_images x n_classes
     weights = torch.tensor(weights).view(-1, 1, 1).to(device) # n_models x 1 x 1
     res *= weights
-    res = res.mean(0)  # n_images x n
-    # _classes
+    res = res.mean(0)  # n_images x n_classes
     _, arg = res.topk(5, 1)
     names = []
     with open(DATA_TXT['test']) as f:
