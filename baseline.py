@@ -11,10 +11,10 @@ from torch import nn
 from torch.optim import SGD, Adam, lr_scheduler
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from timm.models.resnet import resnet18, resnet50, resnet101, resnext50_32x4d, resnext101_32x8d,Bottleneck,BasicBlock
+from timm.models.resnet import resnet18, resnet50, resnet101, resnext50_32x4d, resnext101_32x8d, Bottleneck, BasicBlock
 from timm.models.efficientnet import efficientnet_b2
 from timm.models.swin_transformer import swin_base_patch4_window7_224, swin_base_patch4_window7_224_in22k, \
-    swin_base_patch4_window12_384_in22k, swin_large_patch4_window7_224_in22k,swin_small_patch4_window7_224
+    swin_base_patch4_window12_384_in22k, swin_large_patch4_window7_224_in22k, swin_small_patch4_window7_224
 from timm.data import Mixup
 from timm.loss import LabelSmoothingCrossEntropy
 from torch.cuda import amp
@@ -23,7 +23,7 @@ import numpy as np
 from tqdm import tqdm
 import pandas as pd
 
-from utils import init_seeds, increment_path, MetricLogger, mixup_data, one_hot, warmup_cosine_schedule
+from utils import init_seeds, increment_path, MetricLogger, mixup_data, one_hot, warmup_cosine_schedule, CenterLoss
 
 logging.basicConfig(format="%(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,22 +35,23 @@ DATA_DIR = {'train': 'Train_qtc', 'val': 'val', 'test': 'test_new'}
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--epochs', default=64, type=int)
+    parser.add_argument('--epochs', default=32, type=int)
     parser.add_argument('--img_size', default=224, type=int)
     parser.add_argument('--num_classes', default=1000, type=int)
-    parser.add_argument('--lr', default=1e-3, type=float)
+    parser.add_argument('--lr', default=4e-5, type=float)
     parser.add_argument('--warmup_epochs', default=0, type=float)
-    parser.add_argument('--label_smooth', default=.1, type=float)
+    parser.add_argument('--label_smooth', default=0., type=float)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
-    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument('--model', default='resnet50')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--adam', action='store_true')
     parser.add_argument('--pretrained', action='store_true')
     parser.add_argument('--bce_loss', action='store_true')
-    parser.add_argument('--mix_up', default=1., type=float)
-    parser.add_argument('--cut_mix', default=1., type=float)
+    parser.add_argument('--center_loss', action='store_true')
+    parser.add_argument('--mix_up', default=0., type=float)
+    parser.add_argument('--cut_mix', default=0., type=float)
     parser.add_argument('--save_dir', default='run/exp')
     opt = parser.parse_intermixed_args()
     return opt
@@ -81,8 +82,7 @@ class FoodDataset(Dataset):
                     img_paths.append(str(direc / path))
             self.img_paths = img_paths
         self.trans = None
-        self.trans = transforms.Compose([transforms.RandomAffine(degrees=10, translate=(0.2, 0.2),
-                                                                 scale=(0.8, 1.5)),
+        self.trans = transforms.Compose([transforms.RandomAffine(degrees=10, translate=(0.2, 0.2),scale=(0.8, 1.5)),
                                          transforms.RandomHorizontalFlip(),
                                          transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, ),
                                          ])
@@ -155,12 +155,15 @@ def train(opt):
         loss_func = nn.BCEWithLogitsLoss()
         off_value = opt.label_smooth / opt.num_classes
         on_value = 1. - opt.label_smooth + off_value
+    elif opt.center_loss:
+        loss_func = CenterLoss()
     else:
         loss_func = LabelSmoothingCrossEntropy(opt.label_smooth)
     # train
     best_acc_top1 = float('-inf')
     scaler = amp.GradScaler()
     for epoch in range(epochs):
+        model.train()
         logger.info(f'epoch： {epoch + 1}/{epochs}')
         logger.info('training:')
         train_loss, val_loss, top1_acc, top5_acc = 0, 0, 0, 0

@@ -22,31 +22,10 @@ foodcla
 运行参数见run/exp/opt.yaml
 
 ```bash
-python baseline.py --adam
+python baseline.py
 ```
 
 # 3.结果
 
-### 3.1 resnet50(64 epochs)
+见presentation.pptx
 
-top1_acc:0.4463
-
-top5_acc:0.7180
-
-具体结果见run/exp
-
-### 3.2 resnet101(128 epochs )
-
-top1_acc:0.5372
-
-top5_acc:0.7806
-
-具体结果见run/exp2
-
-### 3.3 resnet101(fine tune)
-
-top1_acc:0.6649
-
-top5_acc:0.8599
-
-具体结果见run/exp3
